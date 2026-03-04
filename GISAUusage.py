@@ -70,8 +70,7 @@ def run_audit():
                             "User": user.username,
                             "Login Time": dt.strftime("%I:%M %p"),
                             "Date": dt.strftime("%Y-%m-%d"),
-                            "Month": dt.strftime("%B %Y"),
-                            "_ts": last_login
+                            "Month": dt.strftime("%B %Y")
                         })
             except Exception as u_err:
                 continue
@@ -90,10 +89,17 @@ def run_audit():
     new_df = pd.DataFrame(records)
     if os.path.exists(OUTPUT_EXCEL):
         try:
-            existing_df = pd.read_excel(OUTPUT_EXCEL, sheet_name='Login History')
+            # Safely migrate from older versions
+            try:
+                existing_df = pd.read_excel(OUTPUT_EXCEL, sheet_name='All Logins')
+            except ValueError:
+                existing_df = pd.read_excel(OUTPUT_EXCEL, sheet_name='Login History')
+                
             # Only combine if it's the same month (data already filtered below)
-            combined_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['User', '_ts'])
-        except Exception:
+            # Use 'User' and 'Date', keeping only the absolute newest entry if times differ
+            combined_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['User', 'Date'], keep='last')
+        except Exception as e:
+            print(f"Error merging data: {e}")
             combined_df = new_df
     else:
         combined_df = new_df
@@ -109,15 +115,18 @@ def run_audit():
     # --- STEP 3: EXCEL GENERATION ---
     try:
         with pd.ExcelWriter(OUTPUT_EXCEL, engine='xlsxwriter') as writer:
-            combined_df.drop(columns=['_ts']).to_excel(writer, index=False, sheet_name='Login History')
+            new_df.to_excel(writer, index=False, sheet_name="Today's Logins")
+            combined_df.to_excel(writer, index=False, sheet_name='All Logins')
             pivot_df.to_excel(writer, sheet_name='Monthly Summary')
             
             wb = writer.book
             header_fmt = wb.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1})
-            ws1 = writer.sheets['Login History']
-            ws1.set_column('A:D', 25)
-            for i, col in enumerate(['User', 'Login Time', 'Date', 'Month']):
-                ws1.write(0, i, col, header_fmt)
+            
+            for sn in ["Today's Logins", 'All Logins']:
+                ws = writer.sheets[sn]
+                ws.set_column('A:D', 25)
+                for i, col in enumerate(['User', 'Login Time', 'Date', 'Month']):
+                    ws.write(0, i, col, header_fmt)
     except PermissionError:
         print("ERROR: Please close the Excel file.")
         return
