@@ -58,8 +58,17 @@ def run_audit():
         users = gis.users.search(query="*", max_users=10000)
         print(f"Found {len(users)} total users. Checking today's logins...")
         
+        user_groups_map = {}
         for user in users:
             try:
+                # Capture user groups for later processing
+                groups = getattr(user, 'groups', [])
+                group_titles = []
+                for g in groups:
+                    if hasattr(g, 'title'):
+                        group_titles.append(g.title)
+                user_groups_map[user.username] = group_titles
+
                 last_login = getattr(user, 'lastLogin', None)
                 if last_login:
                     dt = datetime.fromtimestamp(last_login / 1000)
@@ -122,11 +131,39 @@ def run_audit():
             wb = writer.book
             header_fmt = wb.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1})
             
-            for sn in ["Today's Logins", 'All Logins']:
-                ws = writer.sheets[sn]
-                ws.set_column('A:D', 25)
-                for i, col in enumerate(['User', 'Login Time', 'Date', 'Month']):
-                    ws.write(0, i, col, header_fmt)
+            # Process group-specific tabs
+            all_groups = set()
+            for groups in user_groups_map.values():
+                all_groups.update(groups)
+                
+            group_sheet_names = []
+            for group in sorted(all_groups):
+                group_users = [u for u, g_list in user_groups_map.items() if group in g_list]
+                if group_users:
+                    group_df = combined_df[combined_df['User'].isin(group_users)]
+                    if not group_df.empty:
+                        # Clean sheet name to avoid Excel errors (max 31 chars, no invalid chars)
+                        safe_name = "".join(c for c in group if c not in r'[]:*?/\'').strip()
+                        safe_name = safe_name[:31]
+                        
+                        # Handle duplicate sheet names after truncation
+                        original_safe_name = safe_name
+                        counter = 1
+                        while safe_name in group_sheet_names or safe_name in ["Today's Logins", 'All Logins', 'Monthly Summary']:
+                            suffix = f"_{counter}"
+                            safe_name = original_safe_name[:31 - len(suffix)] + suffix
+                            counter += 1
+                            
+                        group_sheet_names.append(safe_name)
+                        group_df.to_excel(writer, index=False, sheet_name=safe_name)
+
+            sheets_to_format = ["Today's Logins", 'All Logins'] + group_sheet_names
+            for sn in sheets_to_format:
+                if sn in writer.sheets:
+                    ws = writer.sheets[sn]
+                    ws.set_column('A:D', 25)
+                    for i, col in enumerate(['User', 'Login Time', 'Date', 'Month']):
+                        ws.write(0, i, col, header_fmt)
     except PermissionError:
         print("ERROR: Please close the Excel file.")
         return
